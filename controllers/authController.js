@@ -2,40 +2,50 @@
 import User from "../models/User.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import nodemailer from "nodemailer";
+
 import crypto from "crypto";
 
 
 
-// Gmail transporter
-const transporter = nodemailer.createTransport({
-    service: "gmail",
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_APP_PASSWORD?.replace(/\s/g, "")
+const sendEmail = async ({ to, subject, text }) => {
+    const apiKey = process.env.RESEND_API_KEY;
+
+    if (!apiKey) {
+        throw new Error("RESEND_API_KEY is missing");
     }
-});
 
-// Generate a secure 6-digit OTP
-const generateOtp = () => {
-    return crypto.randomInt(100000, 1000000).toString();
+    const response = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            from: "Gao-Connect <onboarding@resend.dev>",
+            to: [to],
+            subject,
+            text
+        }),
+        signal: AbortSignal.timeout(15000)
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+        console.error("Resend email error:", response.status, result);
+        throw new Error("Resend failed to send email");
+    }
+
+    return result;
 };
 
-// Store only the hashed OTP
-const hashOtp = (otp) => {
-    return crypto.createHash("sha256").update(otp).digest("hex");
-};
-
-// Send OTP through Gmail
 const sendOtpEmail = async (email, otp) => {
-    await transporter.sendMail({
-        from: `"Gao-Connect" <${process.env.EMAIL_USER}>`,
+    await sendEmail({
         to: email,
-        subject: "Verify your Gao-Connect email",
-        text: `Your Gao-Connect verification code is ${otp}. It expires in 10 minutes. Do not share this code with anyone.`
+        subject: "Gao-Connect Email Verification OTP",
+        text: `Your Gao-Connect verification OTP is ${otp}. It expires in 10 minutes. Do not share this code with anyone.`
     });
 };
-
 // REGISTER
 export const register = async (req, res) => {
     let createdUserId = null;
@@ -57,9 +67,9 @@ export const register = async (req, res) => {
             });
         }
 
-        if (!process.env.EMAIL_USER || !process.env.EMAIL_APP_PASSWORD) {
-            throw new Error("Email credentials are missing in .env");
-        }
+       if (!process.env.RESEND_API_KEY) {
+    throw new Error("RESEND_API_KEY is missing");
+}
 
         const normalizedEmail = email.trim().toLowerCase();
 
@@ -566,12 +576,11 @@ export const forgotPassword = async (req, res) => {
         await user.save();
 
         try {
-            await transporter.sendMail({
-                from: `"Gao-Connect" <${process.env.EMAIL_USER}>`,
-                to: user.email,
-                subject: "Gao-Connect password reset OTP",
-                text: `Your password reset OTP is ${otp}. It expires in 10 minutes. Do not share this code with anyone.`
-            });
+           await sendEmail({
+    to: user.email,
+    subject: "Gao-Connect password reset OTP",
+    text: `Your password reset OTP is ${otp}. It expires in 10 minutes. Do not share this code with anyone.`
+});
         } catch (emailError) {
             user.resetPasswordOtp = null;
             user.resetPasswordOtpExpires = null;
