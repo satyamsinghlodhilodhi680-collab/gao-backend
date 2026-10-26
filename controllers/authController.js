@@ -2,11 +2,19 @@
 import User from "../models/User.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-
 import crypto from "crypto";
 
+// Generate a secure 6-digit OTP
+const generateOtp = () => {
+    return crypto.randomInt(100000, 1000000).toString();
+};
 
+// Hash OTP before storing it in the database
+const hashOtp = (otp) => {
+    return crypto.createHash("sha256").update(otp).digest("hex");
+};
 
+// Send email using Resend API
 const sendEmail = async ({ to, subject, text }) => {
     const apiKey = process.env.RESEND_API_KEY;
 
@@ -39,6 +47,7 @@ const sendEmail = async ({ to, subject, text }) => {
     return result;
 };
 
+// Send registration verification OTP
 const sendOtpEmail = async (email, otp) => {
     await sendEmail({
         to: email,
@@ -46,6 +55,7 @@ const sendOtpEmail = async (email, otp) => {
         text: `Your Gao-Connect verification OTP is ${otp}. It expires in 10 minutes. Do not share this code with anyone.`
     });
 };
+
 // REGISTER
 export const register = async (req, res) => {
     let createdUserId = null;
@@ -53,7 +63,12 @@ export const register = async (req, res) => {
     try {
         const { firstName, lastName, email, password } = req.body;
 
-        if (!firstName?.trim() || !lastName?.trim() || !email?.trim() || !password) {
+        if (
+            !firstName?.trim() ||
+            !lastName?.trim() ||
+            !email?.trim() ||
+            !password
+        ) {
             return res.status(400).json({
                 success: false,
                 message: "All fields are required"
@@ -67,15 +82,14 @@ export const register = async (req, res) => {
             });
         }
 
-       if (!process.env.RESEND_API_KEY) {
-    throw new Error("RESEND_API_KEY is missing");
-}
+        if (!process.env.RESEND_API_KEY) {
+            throw new Error("RESEND_API_KEY is missing");
+        }
 
         const normalizedEmail = email.trim().toLowerCase();
 
         let user = await User.findOne({ email: normalizedEmail });
 
-        // Existing verified account cannot register again
         if (user?.isVerified === true) {
             return res.status(409).json({
                 success: false,
@@ -83,8 +97,6 @@ export const register = async (req, res) => {
             });
         }
 
-        // Allow an existing unverified account to request a new OTP,
-        // but only after checking its password.
         if (user) {
             const passwordMatches = await bcrypt.compare(
                 password,
@@ -122,7 +134,6 @@ export const register = async (req, res) => {
         try {
             await sendOtpEmail(user.email, otp);
         } catch (emailError) {
-            // Remove a newly created account if email delivery fails.
             if (createdUserId) {
                 await User.findByIdAndDelete(createdUserId);
             }
@@ -140,7 +151,6 @@ export const register = async (req, res) => {
             message: "OTP sent to your email. Verify your email to activate your account.",
             email: user.email
         });
-
     } catch (error) {
         console.error("Register error:", error.message);
 
@@ -170,7 +180,9 @@ export const verifyEmailOtp = async (req, res) => {
             });
         }
 
-        if (!/^\d{6}$/.test(otp.trim())) {
+        const cleanOtp = otp.trim();
+
+        if (!/^\d{6}$/.test(cleanOtp)) {
             return res.status(400).json({
                 success: false,
                 message: "Please enter a valid 6-digit OTP"
@@ -198,7 +210,7 @@ export const verifyEmailOtp = async (req, res) => {
         if (
             !user.emailOtp ||
             !user.emailOtpExpires ||
-            user.emailOtpExpires.getTime() < Date.now()
+            new Date(user.emailOtpExpires).getTime() < Date.now()
         ) {
             return res.status(400).json({
                 success: false,
@@ -206,7 +218,7 @@ export const verifyEmailOtp = async (req, res) => {
             });
         }
 
-        const submittedOtpHash = hashOtp(otp.trim());
+        const submittedOtpHash = hashOtp(cleanOtp);
 
         const hashesMatch = crypto.timingSafeEqual(
             Buffer.from(submittedOtpHash, "hex"),
@@ -230,7 +242,6 @@ export const verifyEmailOtp = async (req, res) => {
             success: true,
             message: "Email verified successfully. You can now login."
         });
-
     } catch (error) {
         console.error("OTP verification error:", error.message);
 
@@ -276,7 +287,6 @@ export const login = async (req, res) => {
             });
         }
 
-        // Block accounts until email verification is complete
         if (user.isVerified !== true) {
             return res.status(403).json({
                 success: false,
@@ -312,7 +322,6 @@ export const login = async (req, res) => {
                 role: user.role
             }
         });
-
     } catch (error) {
         console.error("Login error:", error.message);
 
@@ -340,7 +349,6 @@ export const getMe = async (req, res) => {
             success: true,
             user
         });
-
     } catch (error) {
         console.error("Get current user error:", error.message);
 
@@ -412,7 +420,6 @@ export const updateProfile = async (req, res) => {
     }
 };
 
-
 // CHANGE PASSWORD
 export const changePassword = async (req, res) => {
     try {
@@ -473,7 +480,6 @@ export const changePassword = async (req, res) => {
         }
 
         user.password = await bcrypt.hash(newPassword, 10);
-
         await user.save();
 
         return res.status(200).json({
@@ -490,8 +496,7 @@ export const changePassword = async (req, res) => {
     }
 };
 
-
-/* RESEND REGISTRATION OTP */
+// RESEND REGISTRATION OTP
 export const resendOtp = async (req, res) => {
     try {
         const email = req.body.email?.trim().toLowerCase();
@@ -541,8 +546,7 @@ export const resendOtp = async (req, res) => {
     }
 };
 
-
-/* FORGOT PASSWORD — SEND RESET OTP */
+// FORGOT PASSWORD — SEND RESET OTP
 export const forgotPassword = async (req, res) => {
     try {
         const email = req.body.email?.trim().toLowerCase();
@@ -559,7 +563,6 @@ export const forgotPassword = async (req, res) => {
             isVerified: true
         });
 
-        // Avoid revealing whether an account exists.
         if (!user) {
             return res.status(200).json({
                 success: true,
@@ -576,11 +579,11 @@ export const forgotPassword = async (req, res) => {
         await user.save();
 
         try {
-           await sendEmail({
-    to: user.email,
-    subject: "Gao-Connect password reset OTP",
-    text: `Your password reset OTP is ${otp}. It expires in 10 minutes. Do not share this code with anyone.`
-});
+            await sendEmail({
+                to: user.email,
+                subject: "Gao-Connect password reset OTP",
+                text: `Your password reset OTP is ${otp}. It expires in 10 minutes. Do not share this code with anyone.`
+            });
         } catch (emailError) {
             user.resetPasswordOtp = null;
             user.resetPasswordOtpExpires = null;
@@ -603,8 +606,7 @@ export const forgotPassword = async (req, res) => {
     }
 };
 
-
-/* RESET PASSWORD — VERIFY OTP AND SAVE NEW PASSWORD */
+// RESET PASSWORD — VERIFY OTP AND SAVE NEW PASSWORD
 export const resetPassword = async (req, res) => {
     try {
         const { email, otp, newPassword, confirmPassword } = req.body;
@@ -621,7 +623,9 @@ export const resetPassword = async (req, res) => {
             });
         }
 
-        if (!/^\d{6}$/.test(otp.trim())) {
+        const cleanOtp = otp.trim();
+
+        if (!/^\d{6}$/.test(cleanOtp)) {
             return res.status(400).json({
                 success: false,
                 message: "Please enter a valid 6-digit OTP"
@@ -651,7 +655,7 @@ export const resetPassword = async (req, res) => {
             !user ||
             !user.resetPasswordOtp ||
             !user.resetPasswordOtpExpires ||
-            user.resetPasswordOtpExpires.getTime() < Date.now()
+            new Date(user.resetPasswordOtpExpires).getTime() < Date.now()
         ) {
             return res.status(400).json({
                 success: false,
@@ -659,7 +663,7 @@ export const resetPassword = async (req, res) => {
             });
         }
 
-        const submittedHash = hashOtp(otp.trim());
+        const submittedHash = hashOtp(cleanOtp);
 
         const hashesMatch = crypto.timingSafeEqual(
             Buffer.from(submittedHash, "hex"),
