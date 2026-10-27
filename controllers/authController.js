@@ -1,4 +1,4 @@
-
+import nodemailer from "nodemailer";
 import User from "../models/User.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -13,39 +13,39 @@ const generateOtp = () => {
 const hashOtp = (otp) => {
     return crypto.createHash("sha256").update(otp).digest("hex");
 };
-
-// Send email using Resend API
+// Send email using Gmail SMTP
 const sendEmail = async ({ to, subject, text }) => {
-    const apiKey = process.env.RESEND_API_KEY;
+    const {
+        SMTP_HOST,
+        SMTP_PORT,
+        SMTP_USER,
+        SMTP_PASS,
+        SMTP_FROM
+    } = process.env;
 
-    if (!apiKey) {
-        throw new Error("RESEND_API_KEY is missing");
+    if (!SMTP_HOST || !SMTP_PORT || !SMTP_USER || !SMTP_PASS) {
+        throw new Error("Gmail SMTP credentials are missing");
     }
 
-    const response = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-            from: "Gao-Connect <onboarding@resend.dev>",
-            to: [to],
-            subject,
-            text
-        }),
-        signal: AbortSignal.timeout(15000)
+    const transporter = nodemailer.createTransport({
+        host: SMTP_HOST,
+        port: Number(SMTP_PORT),
+        secure: process.env.SMTP_SECURE === "true",
+        auth: {
+            user: SMTP_USER,
+            pass: SMTP_PASS
+        }
     });
 
-    const result = await response.json();
-
-    if (!response.ok) {
-        console.error("Resend email error:", response.status, result);
-        throw new Error("Resend failed to send email");
-    }
-
-    return result;
+    return await transporter.sendMail({
+        from: SMTP_FROM || SMTP_USER,
+        to,
+        subject,
+        text
+    });
 };
+
+
 
 // Send registration verification OTP
 const sendOtpEmail = async (email, otp) => {
@@ -82,10 +82,9 @@ export const register = async (req, res) => {
             });
         }
 
-        if (!process.env.RESEND_API_KEY) {
-            throw new Error("RESEND_API_KEY is missing");
-        }
-
+       if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+    throw new Error("Gmail SMTP credentials are missing");
+}
         const normalizedEmail = email.trim().toLowerCase();
 
         let user = await User.findOne({ email: normalizedEmail });
