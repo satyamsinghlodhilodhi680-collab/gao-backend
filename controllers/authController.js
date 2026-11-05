@@ -1,8 +1,8 @@
-
 import User from "../models/User.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
+import { sendRegistrationEmail } from "../services/sendEmail.js";
 
 // Generate a secure 6-digit OTP
 const generateOtp = () => {
@@ -14,6 +14,7 @@ const hashOtp = (otp) => {
     return crypto.createHash("sha256").update(otp).digest("hex");
 };
 
+// Existing Resend email helper (used for OTP emails)
 const sendEmail = async ({ to, subject, text }) => {
     const apiKey = process.env.RESEND_API_KEY;
 
@@ -46,9 +47,7 @@ const sendEmail = async ({ to, subject, text }) => {
     return result;
 };
 
-
-
-// Send registration verification OTP
+// Send registration verification OTP (kept for existing routes)
 const sendOtpEmail = async (email, otp) => {
     await sendEmail({
         to: email,
@@ -57,10 +56,12 @@ const sendOtpEmail = async (email, otp) => {
     });
 };
 
-// REGISTER
-export const register = async (req, res) => {
-    let createdUserId = null;
 
+// ==========================================
+// REGISTER - WITHOUT OTP
+// ==========================================
+
+export const register = async (req, res) => {
     try {
         const { firstName, lastName, email, password } = req.body;
 
@@ -82,11 +83,12 @@ export const register = async (req, res) => {
                 message: "Password must be at least 6 characters"
             });
         }
-if (!process.env.RESEND_API_KEY) {
-    throw new Error("RESEND_API_KEY is missing");
-}     const normalizedEmail = email.trim().toLowerCase();
 
-        let user = await User.findOne({ email: normalizedEmail });
+        const normalizedEmail = email.trim().toLowerCase();
+
+        let user = await User.findOne({
+            email: normalizedEmail
+        });
 
         if (user?.isVerified === true) {
             return res.status(409).json({
@@ -96,6 +98,7 @@ if (!process.env.RESEND_API_KEY) {
         }
 
         if (user) {
+            // Existing unverified account
             const passwordMatches = await bcrypt.compare(
                 password,
                 user.password
@@ -107,7 +110,12 @@ if (!process.env.RESEND_API_KEY) {
                     message: "Invalid email or password"
                 });
             }
+
+            user.firstName = firstName.trim();
+            user.lastName = lastName.trim();
+
         } else {
+            // Create new account
             const hashedPassword = await bcrypt.hash(password, 10);
 
             user = new User({
@@ -115,40 +123,40 @@ if (!process.env.RESEND_API_KEY) {
                 lastName: lastName.trim(),
                 email: normalizedEmail,
                 password: hashedPassword,
-                isVerified: false
+                isVerified: true
             });
-
-            await user.save();
-            createdUserId = user._id;
         }
 
-        const otp = generateOtp();
-
-        user.emailOtp = hashOtp(otp);
-        user.emailOtpExpires = new Date(Date.now() + 10 * 60 * 1000);
+        // Activate account without registration OTP
+        user.isVerified = true;
+        user.emailOtp = null;
+        user.emailOtpExpires = null;
 
         await user.save();
 
+        // Send Welcome Email
+        // Registration will remain successful even if email fails
         try {
-            await sendOtpEmail(user.email, otp);
+            await sendRegistrationEmail(
+                user.email,
+                `${user.firstName} ${user.lastName}`
+            );
+
+            console.log("Welcome email sent successfully");
+
         } catch (emailError) {
-            if (createdUserId) {
-                await User.findByIdAndDelete(createdUserId);
-            }
-
-            console.error("OTP email error:", emailError.message);
-
-            return res.status(500).json({
-                success: false,
-                message: "Could not send verification email. Please try again."
-            });
+            console.error(
+                "Welcome email failed:",
+                emailError.message
+            );
         }
 
-        return res.status(200).json({
+        return res.status(201).json({
             success: true,
-            message: "OTP sent to your email. Verify your email to activate your account.",
+            message: "Registration successful. You can now login.",
             email: user.email
         });
+
     } catch (error) {
         console.error("Register error:", error.message);
 
@@ -166,7 +174,11 @@ if (!process.env.RESEND_API_KEY) {
     }
 };
 
-// VERIFY EMAIL OTP
+
+// ==========================================
+// VERIFY EMAIL OTP - KEPT FOR OLD ROUTES
+// ==========================================
+
 export const verifyEmailOtp = async (req, res) => {
     try {
         const { email, otp } = req.body;
@@ -240,6 +252,7 @@ export const verifyEmailOtp = async (req, res) => {
             success: true,
             message: "Email verified successfully. You can now login."
         });
+
     } catch (error) {
         console.error("OTP verification error:", error.message);
 
@@ -250,7 +263,11 @@ export const verifyEmailOtp = async (req, res) => {
     }
 };
 
+
+// ==========================================
 // LOGIN
+// ==========================================
+
 export const login = async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -288,7 +305,7 @@ export const login = async (req, res) => {
         if (user.isVerified !== true) {
             return res.status(403).json({
                 success: false,
-                message: "Please verify your email with OTP before logging in."
+                message: "Please complete account registration."
             });
         }
 
@@ -302,13 +319,13 @@ export const login = async (req, res) => {
             { expiresIn: "1d" }
         );
 
-       res.cookie("token", token, {
-  httpOnly: true,
-  secure: true,
-  sameSite: "none",
-  path: "/",
-  maxAge: 24 * 60 * 60 * 1000
-});
+        res.cookie("token", token, {
+            httpOnly: true,
+            secure: true,
+            sameSite: "none",
+            path: "/",
+            maxAge: 24 * 60 * 60 * 1000
+        });
 
         return res.status(200).json({
             success: true,
@@ -321,6 +338,7 @@ export const login = async (req, res) => {
                 role: user.role
             }
         });
+
     } catch (error) {
         console.error("Login error:", error.message);
 
@@ -331,7 +349,11 @@ export const login = async (req, res) => {
     }
 };
 
+
+// ==========================================
 // GET CURRENT USER
+// ==========================================
+
 export const getMe = async (req, res) => {
     try {
         const user = await User.findById(req.userId)
@@ -348,6 +370,7 @@ export const getMe = async (req, res) => {
             success: true,
             user
         });
+
     } catch (error) {
         console.error("Get current user error:", error.message);
 
@@ -358,12 +381,17 @@ export const getMe = async (req, res) => {
     }
 };
 
+
+// ==========================================
 // LOGOUT
+// ==========================================
+
 export const logout = (req, res) => {
     res.clearCookie("token", {
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "lax"
+        secure: true,
+        sameSite: "none",
+        path: "/"
     });
 
     return res.status(200).json({
@@ -372,7 +400,11 @@ export const logout = (req, res) => {
     });
 };
 
+
+// ==========================================
 // UPDATE USER PROFILE
+// ==========================================
+
 export const updateProfile = async (req, res) => {
     try {
         const { firstName, lastName } = req.body;
@@ -409,6 +441,7 @@ export const updateProfile = async (req, res) => {
                 role: user.role
             }
         });
+
     } catch (error) {
         console.error("Update profile error:", error.message);
 
@@ -419,10 +452,18 @@ export const updateProfile = async (req, res) => {
     }
 };
 
+
+// ==========================================
 // CHANGE PASSWORD
+// ==========================================
+
 export const changePassword = async (req, res) => {
     try {
-        const { currentPassword, newPassword, confirmPassword } = req.body;
+        const {
+            currentPassword,
+            newPassword,
+            confirmPassword
+        } = req.body;
 
         if (!currentPassword || !newPassword || !confirmPassword) {
             return res.status(400).json({
@@ -479,12 +520,14 @@ export const changePassword = async (req, res) => {
         }
 
         user.password = await bcrypt.hash(newPassword, 10);
+
         await user.save();
 
         return res.status(200).json({
             success: true,
             message: "Password updated successfully. Please log in again."
         });
+
     } catch (error) {
         console.error("Change password error:", error.message);
 
@@ -495,7 +538,11 @@ export const changePassword = async (req, res) => {
     }
 };
 
-// RESEND REGISTRATION OTP
+
+// ==========================================
+// RESEND REGISTRATION OTP - KEPT FOR OLD ROUTES
+// ==========================================
+
 export const resendOtp = async (req, res) => {
     try {
         const email = req.body.email?.trim().toLowerCase();
@@ -529,12 +576,14 @@ export const resendOtp = async (req, res) => {
         user.emailOtpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
         await user.save();
+
         await sendOtpEmail(user.email, otp);
 
         return res.status(200).json({
             success: true,
             message: "A new verification OTP has been sent to your email."
         });
+
     } catch (error) {
         console.error("Resend OTP error:", error.message);
 
@@ -545,7 +594,11 @@ export const resendOtp = async (req, res) => {
     }
 };
 
-// FORGOT PASSWORD — SEND RESET OTP
+
+// ==========================================
+// FORGOT PASSWORD - SEND RESET OTP
+// ==========================================
+
 export const forgotPassword = async (req, res) => {
     try {
         const email = req.body.email?.trim().toLowerCase();
@@ -583,9 +636,11 @@ export const forgotPassword = async (req, res) => {
                 subject: "Gao-Connect password reset OTP",
                 text: `Your password reset OTP is ${otp}. It expires in 10 minutes. Do not share this code with anyone.`
             });
+
         } catch (emailError) {
             user.resetPasswordOtp = null;
             user.resetPasswordOtpExpires = null;
+
             await user.save();
 
             throw emailError;
@@ -595,6 +650,7 @@ export const forgotPassword = async (req, res) => {
             success: true,
             message: "If a verified account exists, a reset OTP will be sent."
         });
+
     } catch (error) {
         console.error("Forgot password error:", error.message);
 
@@ -605,10 +661,19 @@ export const forgotPassword = async (req, res) => {
     }
 };
 
-// RESET PASSWORD — VERIFY OTP AND SAVE NEW PASSWORD
+
+// ==========================================
+// RESET PASSWORD - VERIFY OTP AND SAVE PASSWORD
+// ==========================================
+
 export const resetPassword = async (req, res) => {
     try {
-        const { email, otp, newPassword, confirmPassword } = req.body;
+        const {
+            email,
+            otp,
+            newPassword,
+            confirmPassword
+        } = req.body;
 
         if (
             !email?.trim() ||
@@ -686,6 +751,7 @@ export const resetPassword = async (req, res) => {
             success: true,
             message: "Password reset successfully. You can now log in."
         });
+
     } catch (error) {
         console.error("Reset password error:", error.message);
 
