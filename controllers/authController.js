@@ -62,6 +62,9 @@ const sendOtpEmail = async (email, otp) => {
 // ==========================================
 
 export const register = async (req, res) => {
+    console.log("REGISTER CONTROLLER HIT");
+    const registrationStartedAt = Date.now();
+
     try {
         const { firstName, lastName, email, password } = req.body;
 
@@ -86,9 +89,13 @@ export const register = async (req, res) => {
 
         const normalizedEmail = email.trim().toLowerCase();
 
+        const lookupStartedAt = Date.now();
         let user = await User.findOne({
             email: normalizedEmail
         });
+        console.log(
+            `[Register timing] MongoDB user lookup: ${Date.now() - lookupStartedAt}ms`
+        );
 
         if (user?.isVerified === true) {
             return res.status(409).json({
@@ -116,7 +123,11 @@ export const register = async (req, res) => {
 
         } else {
             // Create new account
+            const hashStartedAt = Date.now();
             const hashedPassword = await bcrypt.hash(password, 10);
+            console.log(
+                `[Register timing] Password hash: ${Date.now() - hashStartedAt}ms`
+            );
 
             user = new User({
                 firstName: firstName.trim(),
@@ -132,25 +143,32 @@ export const register = async (req, res) => {
         user.emailOtp = null;
         user.emailOtpExpires = null;
 
+        const saveStartedAt = Date.now();
         await user.save();
+        console.log(
+            `[Register timing] MongoDB user save: ${Date.now() - saveStartedAt}ms`
+        );
 
-        // Send Welcome Email
-        // Registration will remain successful even if email fails
-        try {
-            await sendRegistrationEmail(
-                user.email,
-                `${user.firstName} ${user.lastName}`
-            );
+        const emailStartedAt = Date.now();
+        sendRegistrationEmail(
+            user.email,
+            `${user.firstName} ${user.lastName}`
+        )
+            .then(() => {
+                console.log(
+                    `[Register timing] Welcome email sent: ${Date.now() - emailStartedAt}ms`
+                );
+            })
+            .catch((emailError) => {
+                console.error(
+                    `[Register timing] Welcome email failed after ${Date.now() - emailStartedAt}ms:`,
+                    emailError.message
+                );
+            });
 
-            console.log("Welcome email sent successfully");
-
-        } catch (emailError) {
-            console.error(
-                "Welcome email failed:",
-                emailError.message
-            );
-        }
-
+        console.log(
+            `[Register timing] Responding after ${Date.now() - registrationStartedAt}ms`
+        );
         return res.status(201).json({
             success: true,
             message: "Registration successful. You can now login.",
