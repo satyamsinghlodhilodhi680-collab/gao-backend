@@ -11,9 +11,28 @@ const transporter = nodemailer.createTransport({
     },
 });
 
+export const sendEmail = async ({ to, subject, text }) => {
+    return transporter.sendMail({
+        from: `"Gao-Connect" <${process.env.EMAIL_USER}>`,
+        to,
+        subject,
+        text,
+    });
+};
+
+const escapeHtml = (value) =>
+    String(value).replace(/[&<>"']/g, (character) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+    })[character]);
+
 export const sendRegistrationEmail = async (userEmail, name) => {
     try {
         const subject = "Welcome to Gao-Connect!";
+        const escapedName = escapeHtml(name);
 
         const text = `Hello ${name},
 
@@ -26,7 +45,7 @@ Thank you for joining our community!
 Team Gao-Connect`;
 
         const html = `
-            <h2>Hello ${name},</h2>
+            <h2>Hello ${escapedName},</h2>
             <p>Welcome to <b>Gao-Connect!</b></p>
             <p>Your registration has been completed successfully.</p>
             <p>Thank you for joining our community!</p>

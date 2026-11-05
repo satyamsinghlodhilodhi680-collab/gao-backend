@@ -2,7 +2,11 @@ import User from "../models/User.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
-import { sendRegistrationEmail } from "../services/sendEmail.js";
+import {
+    sendEmail as sendGmailEmail,
+    sendRegistrationEmail
+} from "../services/sendEmail.js";
+
 
 // Generate a secure 6-digit OTP
 const generateOtp = () => {
@@ -14,42 +18,9 @@ const hashOtp = (otp) => {
     return crypto.createHash("sha256").update(otp).digest("hex");
 };
 
-// Existing Resend email helper (used for OTP emails)
-const sendEmail = async ({ to, subject, text }) => {
-    const apiKey = process.env.RESEND_API_KEY;
-
-    if (!apiKey) {
-        throw new Error("RESEND_API_KEY is missing");
-    }
-
-    const response = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-            from: "Gao-Connect <onboarding@resend.dev>",
-            to: [to],
-            subject,
-            text
-        }),
-        signal: AbortSignal.timeout(15000)
-    });
-
-    const result = await response.json();
-
-    if (!response.ok) {
-        console.error("Resend email error:", response.status, result);
-        throw new Error("Resend failed to send email");
-    }
-
-    return result;
-};
-
 // Send registration verification OTP (kept for existing routes)
 const sendOtpEmail = async (email, otp) => {
-    await sendEmail({
+    await sendGmailEmail({
         to: email,
         subject: "Gao-Connect Email Verification OTP",
         text: `Your Gao-Connect verification OTP is ${otp}. It expires in 10 minutes. Do not share this code with anyone.`
@@ -58,7 +29,7 @@ const sendOtpEmail = async (email, otp) => {
 
 
 // ==========================================
-// REGISTER - WITHOUT OTP
+// REGISTER - REQUIRE EMAIL OTP
 // ==========================================
 
 export const register = async (req, res) => {
@@ -134,14 +105,14 @@ export const register = async (req, res) => {
                 lastName: lastName.trim(),
                 email: normalizedEmail,
                 password: hashedPassword,
-                isVerified: true
+                isVerified: false
             });
         }
 
-        // Activate account without registration OTP
-        user.isVerified = true;
-        user.emailOtp = null;
-        user.emailOtpExpires = null;
+        const otp = generateOtp();
+        user.isVerified = false;
+        user.emailOtp = hashOtp(otp);
+        user.emailOtpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
         const saveStartedAt = Date.now();
         await user.save();
@@ -149,29 +120,14 @@ export const register = async (req, res) => {
             `[Register timing] MongoDB user save: ${Date.now() - saveStartedAt}ms`
         );
 
-        const emailStartedAt = Date.now();
-        sendRegistrationEmail(
-            user.email,
-            `${user.firstName} ${user.lastName}`
-        )
-            .then(() => {
-                console.log(
-                    `[Register timing] Welcome email sent: ${Date.now() - emailStartedAt}ms`
-                );
-            })
-            .catch((emailError) => {
-                console.error(
-                    `[Register timing] Welcome email failed after ${Date.now() - emailStartedAt}ms:`,
-                    emailError.message
-                );
-            });
+        await sendOtpEmail(user.email, otp);
 
         console.log(
             `[Register timing] Responding after ${Date.now() - registrationStartedAt}ms`
         );
         return res.status(201).json({
             success: true,
-            message: "Registration successful. You can now login.",
+            message: "Verification OTP sent to your email.",
             email: user.email
         });
 
@@ -265,6 +221,23 @@ export const verifyEmailOtp = async (req, res) => {
         user.emailOtpExpires = null;
 
         await user.save();
+
+        const emailStartedAt = Date.now();
+        sendRegistrationEmail(
+            user.email,
+            `${user.firstName} ${user.lastName}`
+        )
+            .then(() => {
+                console.log(
+                    `[Verification timing] Welcome email sent: ${Date.now() - emailStartedAt}ms`
+                );
+            })
+            .catch((emailError) => {
+                console.error(
+                    `[Verification timing] Welcome email failed after ${Date.now() - emailStartedAt}ms:`,
+                    emailError.message
+                );
+            });
 
         return res.status(200).json({
             success: true,
@@ -649,7 +622,7 @@ export const forgotPassword = async (req, res) => {
         await user.save();
 
         try {
-            await sendEmail({
+            await sendGmailEmail({
                 to: user.email,
                 subject: "Gao-Connect password reset OTP",
                 text: `Your password reset OTP is ${otp}. It expires in 10 minutes. Do not share this code with anyone.`
