@@ -11,13 +11,54 @@ const transporter = nodemailer.createTransport({
     },
 });
 
-export const sendEmail = async ({ to, subject, text }) => {
-    return transporter.sendMail({
-        from: `"Gao-Connect" <${process.env.EMAIL_USER}>`,
-        to,
-        subject,
-        text,
+const redactDiagnosticValue = (value) => {
+    if (value == null) return null;
+
+    let sanitized = String(value).replace(/\b\d{6}\b/g, "[redacted]");
+    for (const secret of [
+        process.env.CLIENT_ID,
+        process.env.CLIENT_SECRET,
+        process.env.REFRESH_TOKEN,
+        process.env.EMAIL_USER,
+    ]) {
+        if (secret) sanitized = sanitized.replaceAll(secret, () => "[redacted]");
+    }
+
+    return sanitized;
+};
+
+const logSmtpError = (context, error) => {
+    console.error(context, {
+        message: redactDiagnosticValue(error?.message),
+        code: redactDiagnosticValue(error?.code),
+        command: redactDiagnosticValue(error?.command),
+        response: redactDiagnosticValue(error?.response),
     });
+};
+
+const diagnoseSmtpFailure = async (context, error) => {
+    logSmtpError(context, error);
+
+    try {
+        await transporter.verify();
+        console.error("SMTP connection check succeeded after email failure.");
+    } catch (connectionError) {
+        logSmtpError("SMTP connection check failed.", connectionError);
+    }
+};
+
+export const sendEmail = async ({ to, subject, text }) => {
+    try {
+        return await transporter.sendMail({
+            from: `"Gao-Connect" <${process.env.EMAIL_USER}>`,
+            to,
+            subject,
+            text,
+        });
+    } catch (error) {
+        await diagnoseSmtpFailure("Email send failed.", error);
+        throw error;
+    }
 };
 
 const escapeHtml = (value) =>
@@ -65,7 +106,7 @@ Team Gao-Connect`;
         return info;
 
     } catch (error) {
-        console.error("Welcome email error:", error.message);
+        await diagnoseSmtpFailure("Welcome email send failed.", error);
         throw error;
     }
 };
